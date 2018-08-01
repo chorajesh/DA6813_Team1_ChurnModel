@@ -58,13 +58,13 @@ along with the data set ChurnDataset1.csv and can run the project.
 
 ## Built With
 
-*R
-*MS-Office(365)
+* R
+* MS-Office(365)
 
 
 ## Versioning
 
-We use [Git Hub](https://github.com/your/project/tags). 
+We use [Git Hub](https://github.com/chorajesh/DA6813_Team1_ChurnModel). 
 
 ## Authors
 
@@ -78,9 +78,9 @@ This project is copy left and open to public.
 
 ## Acknowledgments
 
-[kaggle] (https://www.kaggle.com/c/customer-churn-prediction/data)
-[Analytics Vidhya] (https://www.analyticsvidhya.com/blog/2017/02/introduction-to-ensembling-along-with-implementation-in-r)
-[ISLR] (https://www.springer.com/us/book/9781461471370)
-[Rpubs] (https://rpubs.com/zxs107020/370699)
+* [kaggle] (https://www.kaggle.com/c/customer-churn-prediction/data)
+* [Analytics Vidhya] (https://www.analyticsvidhya.com/blog/2017/02/introduction-to-ensembling-along-with-implementation-in-r)
+* [ISLR] (https://www.springer.com/us/book/9781461471370)
+* [Rpubs] (https://rpubs.com/zxs107020/370699)
 
 
