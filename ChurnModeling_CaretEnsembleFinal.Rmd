@@ -1,0 +1,859 @@
+---
+title: "Churn_Dataset_1_Classification_Models"
+author: "Jovanova Biljana, Rajesh Chodavarapu"
+date: "July 15, 2018"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r}
+
+EnsurePackage<-function(x)
+{ # EnsurePackage(x) - Installs and loads a package
+  # if necessary
+  x <- as.character(x)
+  if (!require(x, character.only=TRUE))
+  {
+    if(x == "doMC")
+    {
+      install.packages("doMC", repos="http://R-Forge.R-project.org")
+    }
+    else
+      {
+        install.packages(pkgs=x, repos="http://cran.r-project.org")
+      }
+  }
+  require(x, character.only=TRUE)
+  
+}
+
+```
+
+
+#Installs and loads all packages necessary
+
+```{r}
+
+PrepareProject<-function(){
+  EnsurePackage("GGally")
+  EnsurePackage("ggplot2")
+  EnsurePackage("corrplot")
+  EnsurePackage("caret")
+  EnsurePackage("MASS") #lda qda
+  EnsurePackage("class") #knn 
+  EnsurePackage("gam")
+  EnsurePackage("tree")
+  EnsurePackage("car")
+  EnsurePackage("randomForest")
+  EnsurePackage("earth") #marss 
+  EnsurePackage("dplyr")
+  EnsurePackage("pROC")
+  EnsurePackage("caretEnsemble")
+  EnsurePackage("nnet")
+  EnsurePackage("e1071")
+  EnsurePackage("caretEnsemble")
+  EnsurePackage("data.table")
+  EnsurePackage("doMC")
+  EnsurePackage("DMwR")
+}
+
+PrepareProject()
+
+```
+
+
+#Load Libraries Needed for Analysis 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(GGally)
+library(ggplot2)
+library(corrplot)
+library(caret)
+library(MASS) #lda qda
+library(class) #knn 
+library(gam)
+library(tree)
+library(car)
+library(randomForest)
+library(earth) #marss 
+library(dplyr)
+library(pROC)
+library(caretEnsemble)
+library(parallel)
+library(doMC)
+source("model_functions.R")
+```
+
+#Load the datset 
+
+5000 x 21 var (20 predictors, 1 response = "churn")
+
+```{r}
+#setwd("C:/Users/bilj6056/Desktop/D_Applications/Project/")
+#setwd("/home/rajesh/Documents/DataAnalyticsApplications/projectwork/ChurnDataSet1/")
+churnOriginal = read.csv("./ChurnDataset1.csv", header = TRUE)
+```
+
+#Data Preprocessing and Exploratory Analysis 
+
+```{r}
+summary(churnOriginal) #looking at range 
+str(churnOriginal) #4 categorical and 16 continuous 
+sum(is.na(churnOriginal)) #No missing 
+
+```
+
+#Feature Engineering 
+
+New Columns Calculated: 
+Find new pricing components and overall total charge 
+
+```{r}
+churnOriginal$totalCharge = (churnOriginal$total_day_charge + churnOriginal$total_eve_charge 
+                            + churnOriginal$total_night_charge + churnOriginal$total_intl_charge)
+
+#churnOriginal$internationalCallRate = churnOriginal$total_intl_charge/churnOriginal$total_intl_minutes
+
+#churnOriginal$dayCallRate = churnOriginal$total_day_charge/churnOriginal$total_day_minutes
+
+#churnOriginal$eveningCallRate = churnOriginal$total_eve_charge/churnOriginal$total_eve_minutes
+
+#churnOriginal$nightCallRate = churnOriginal$total_night_charge/churnOriginal$total_night_minutes
+
+#Correct when the denominator is NA resulting from the calculation above (replace with zero)
+# churnOriginal$dayCallRate[c(which(is.na(churnOriginal$dayCallRate)))] = 0
+# churnOriginal$eveningCallRate[c(which(is.na(churnOriginal$eveningCallRate)))] = 0
+# churnOriginal$nightCallRate[c(which(is.na(churnOriginal$nightCallRate)))] = 0
+# churnOriginal$internationalCallRate[c(which(is.na(churnOriginal$internationalCallRate)))] = 0 
+
+```
+
+```{r}
+#Sparse data in claculated rates create issues in LDA and QDA 
+summary(churnOriginal$dayCallRate)
+
+growth_density = ggplot(churnOriginal, aes(x=internationalCallRate)) + 
+                        geom_histogram(aes(y=..density..),      
+                                            binwidth=.5,
+                                            colour="black", fill="white") +
+                        geom_density(alpha=.2, fill="#FF6666")+
+                        labs(x = "internationalCallRate")+
+                        theme_bw()
+```
+
+Visualize correlations and distributions
+remove state, area_code, phone_number variables 
+```{r}
+ggpairs(churnOriginal[,-c(1,3,4)], aes(alpha = .1)
+        , lower = list(combo = wrap("facethist", binwidth = .5)))
+
+str(churnOriginal)
+```
+
+Remove uninformative variables: 
+state (too many factor levels causing issues in libraries which have a 12 factor constraint), maybe recode this into US region variable 
+
+area_code , phone_number 
+```{r}
+sum(is.na(churnOriginal))
+str(churnOriginal)
+
+fullDataSet1 = churnOriginal[,-c(1, 3, 4)]
+str(fullDataSet1)
+```
+
+Exploratory Analysis 
+Identify and remove near zero variance and highly correlated variables 
+
+```{r}
+#zero variance 
+zeroVarCol = nearZeroVar(fullDataSet1)
+zeroVarColNames = colnames(fullDataSet1)[zeroVarCol] #number_vmail_messages
+
+#high correlations 
+numColNames = colnames(select_if(fullDataSet1, is.numeric))
+numMatrix = fullDataSet1[numColNames]
+
+sum(is.na(fullDataSet1))
+corrPredictors = findCorrelation( cor( numMatrix ), cutoff=0.75 )
+HighCorColNames = colnames(numMatrix)[corrPredictors]
+
+noCor_reducedPredictors = numMatrix[,-corrPredictors]
+
+#visualize the correlations 
+corrplot( cor(noCor_reducedPredictors))
+corrplot( cor(numMatrix)) #original correlation matrix  
+#predictors to be used ifor reduced dataset .
+names(noCor_reducedPredictors)
+
+colToRemove = c(zeroVarColNames,HighCorColNames)
+```
+
+#Create the reduced dataset removing predictors 
+
+```{r}
+reducedDataset1 = fullDataSet1[ , !(names(fullDataSet1) %in% colToRemove)]
+str(reducedDataset1)
+```
+
+#Perform Data Splitting for Modeling purposes 
+
+```{r}
+#full dataset 
+set.seed(715)
+trainIndex = createDataPartition(y = fullDataSet1$churn, p = .75, list = FALSE)
+
+trainingFull = fullDataSet1[ trainIndex, ]
+testingFull =  fullDataSet1[-trainIndex, ]
+
+#reduced dataset 
+set.seed(715)
+trainIndexRed = createDataPartition(y = reducedDataset1$churn, p = .75, list = FALSE)
+
+trainingRed = reducedDataset1[ trainIndexRed, ]
+testingRed  = reducedDataset1[-trainIndexRed, ]
+
+#define predictors for FULL dataset 
+predictorsFull = colnames(trainingFull)
+predictorsFull = predictorsFull[predictorsFull != "churn"]
+#define predictors for REDUCED dataset 
+predictorsRed = colnames(trainingRed)
+predictorsRed = predictorsRed[predictorsRed != "churn"]
+
+#UpSampling and Smote Sampling
+
+#Upsampling
+set.seed(1103)
+
+upSampledTrainRed <- upSample(x = trainingRed[,predictorsRed],
+                           y = trainingRed$churn,
+                            yname = "churn")
+
+#Smote Sampling
+library(DMwR)
+set.seed(1103)
+smoteTrainRed <- SMOTE(churn ~ ., data = trainingRed)
+
+
+```
+
+
+```{r}
+#Defining the training control- 10 fold cross variadation with 5 repeats 
+fitControl = trainControl(method = "repeatedcv",
+                          number = 10,
+                          repeats = 5,
+                          savePredictions = 'final', 
+                          classProbs = T, 
+                          summaryFunction = twoClassSummary 
+                          )
+```
+
+
+#Random Forrest 
+
+```{r}
+
+#RF on Full DataSet
+print("Random Forest Model on Full Data Set")
+RFChurnFull = randomForestChurn(trainingFull, testingFull, predictorsFull, rocChartName ="ROC Random Forest Model on Full Data Set" )
+RFChurnFull$YoudensIndex
+RFChurnFull$RFModel
+RFChurnFull$confMat
+RFChurnFull$varImportance
+RFChurnFull$varImpPlot
+RFChurnFull$RFModel$finalModel
+
+#RF on Reduced DataSet
+print("Random Forest Model on Reduced Data Set")
+RFChurnReduced = randomForestChurn(trainingRed, testingRed, predictorsRed, rocChartName ="ROC Random Forest Model on Reduced Data Set" )
+RFChurnReduced$YoudensIndex
+RFChurnReduced$RFModel
+RFChurnReduced$confMat
+RFChurnReduced$varImportance
+RFChurnReduced$varImpPlot
+RFChurnReduced$RFModel$finalModel
+
+
+#RF on Upsampling DataSet - Full
+print("Random Forest Model on Upsampling reduced Data Set")
+RFChurnUpSampleReduced = randomForestChurn(upSampledTrainRed, testingRed, predictorsRed, rocChartName = "ROC Random Forest Model on Upsampling Reduced Data Set")
+RFChurnUpSampleReduced$YoudensIndex
+RFChurnUpSampleReduced$RFModel
+RFChurnUpSampleReduced$confMat
+RFChurnUpSampleReduced$varImportance
+RFChurnUpSampleReduced$varImpPlot
+
+#RF on Smote sample DataSet
+print("Random Forest Model on Smote sampling Reduced Data Set")
+RFChurnSmoteSampleReduced = randomForestChurn(smoteTrainRed, testingRed, predictorsRed, rocChartName = "ROC Random Forest Model on Smote Reduced Data Set")
+RFChurnSmoteSampleReduced$YoudensIndex
+RFChurnSmoteSampleReduced$RFModel
+RFChurnSmoteSampleReduced$confMat
+RFChurnSmoteSampleReduced$varImportance
+RFChurnSmoteSampleReduced$varImpPlot
+
+
+plot(RFChurnFull$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test RF Full Set ROC")
+plot(RFChurnReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test RF Reduced ROC")
+plot(RFChurnSmoteSampleReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test RF Smote Reduced ROC")
+plot(RFChurnUpSampleReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test RF Up Sample Reduced ROC")
+
+plot(RFChurnReduced$rocCurveTrain, col = "red", lty = 2, main = "ROC")
+plot(RFChurnSmoteSampleReduced$rocCurveTrain, col = "green", lty = 3, add = TRUE)
+plot(RFChurnUpSampleReduced$rocCurveTrain, col = "blue", lty = 5, add = TRUE)
+
+```
+
+#Decision Tree AND Cross Validated Pruned Tree 
+
+```{r}
+
+print("Decison Tree Model on Full Data Set")
+# #Decision Tree on Full DataSet
+train = trainingFull
+test = testingFull
+rocChartName ="ROC  Decision Tree on Full Data Set"
+set.seed(715)
+tree_churn = tree(churn~., data = train)
+
+#PRune TREE 
+#prune the tree
+set.seed(725)
+cv.tree.churn = cv.tree(tree_churn, FUN = prune.misclass)
+cv.tree.churn
+minSD = min(cv.tree.churn$dev)
+minSDTreeSize = which(cv.tree.churn$dev == minSD)
+bestTreeSize = min(cv.tree.churn$size[minSDTreeSize])
+
+par(mfrow=c(1,2)) #i want to plot size vs deviance
+plot(cv.tree.churn$size, cv.tree.churn$dev,type="b")
+plot(cv.tree.churn$k, cv.tree.churn$dev,type="b") #best tree size is 8
+
+#build best tree based on prunning 
+prune.churn.tree = prune.misclass(tree_churn, best = bestTreeSize)
+par(mfrow=c(1,1))
+plot(prune.churn.tree, type = "uniform")
+text(prune.churn.tree, pretty=0)
+
+#predictions on test data 
+tree.pred = predict(prune.churn.tree, newdata = test)
+tree.pred.class = predict(prune.churn.tree, newdata = test, type = "class")
+tree.pred.train = predict(prune.churn.tree, newdata = train)
+#confusion matrix
+confMatrix = confusionMatrix(tree.pred.class,test$churn, positive = "yes" )
+confMatrix
+#ROC 
+rocCurveTest = roc(test$churn, 
+               tree.pred[,2],
+               levels = (levels(test$churn)))
+
+#Plot ROC 
+rocPlotTest = plot(rocCurveTest, print.thres = c(.5), type = "S"
+               ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+               ,print.thres.cex = .8
+               ,legacy.axes = TRUE
+               ,main = paste("Test ",   rocChartName)
+               )
+
+rocCurveTrain = roc(train$churn, 
+                    tree.pred.train[,2],
+                    levels = (levels(train$churn)))
+
+#Plot ROC 
+rocPlotTrain = plot(rocCurveTrain, print.thres = c(.5), type = "S"
+                   ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+                   ,print.thres.cex = .8 
+                   ,legacy.axes = TRUE
+                   ,main = paste("Train ",   rocChartName)
+                   )
+
+YoudenLogTresh = coords(rocCurveTrain,x = "best", best.method = "closest.topleft"); YoudenLogTresh
+
+print("-----------------------------------------------------------------------------------------------")
+
+
+print("Decison Tree Model on Reduced Data Set")
+# #Decision Tree on Reduced DataSet
+train = trainingRed
+test = testingRed
+rocChartName ="ROC  Decision Tree on Reduced Data Set"
+set.seed(715)
+tree_churn = tree(churn~., data = train)
+
+#PRune TREE 
+#prune the tree
+set.seed(725)
+cv.tree.churn = cv.tree(tree_churn, FUN = prune.misclass)
+cv.tree.churn
+minSD = min(cv.tree.churn$dev)
+minSDTreeSize = which(cv.tree.churn$dev == minSD)
+bestTreeSize = min(cv.tree.churn$size[minSDTreeSize])
+
+par(mfrow=c(1,2)) #i want to plot size vs deviance
+plot(cv.tree.churn$size, cv.tree.churn$dev,type="b")
+plot(cv.tree.churn$k, cv.tree.churn$dev,type="b") #best tree size is 8
+
+#build best tree based on prunning 
+prune.churn.tree = prune.misclass(tree_churn, best = bestTreeSize)
+plot(prune.churn.tree, type = "uniform")
+text(prune.churn.tree, pretty=0)
+
+#predictions on test data 
+tree.pred = predict(prune.churn.tree, newdata = test)
+tree.pred.class = predict(prune.churn.tree, newdata = test, type = "class")
+tree.pred.train = predict(prune.churn.tree, newdata = train)
+
+#confusion matrix
+
+confMatrix = confusionMatrix(tree.pred.class,test$churn, positive = "yes" )
+confMatrix
+#ROC 
+rocCurveTest = roc(test$churn, 
+               tree.pred[,2],
+               levels = rev(levels(test$churn)))
+
+#Plot ROC 
+rocPlotTest = plot(rocCurveTest, print.thres = c(.5), type = "S"
+               ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+               ,print.thres.cex = .8
+               ,legacy.axes = TRUE
+               ,main = paste("Test ",   rocChartName)
+               )
+
+rocCurveTrain = roc(train$churn, 
+                    tree.pred.train[,2],
+                    levels = rev(levels(train$churn)))
+
+#Plot ROC 
+rocPlotTrain = plot(rocCurveTrain, print.thres = c(.5), type = "S"
+                   ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+                   ,print.thres.cex = .8 
+                   ,legacy.axes = TRUE
+                   ,main = paste("Train ",   rocChartName)
+                   )
+
+YoudenLogTresh = coords(rocCurveTrain,x = "best", best.method = "closest.topleft"); YoudenLogTresh
+
+
+print("-----------------------------------------------------------------------------------------------")
+
+
+print("Decison Tree Model on Upsample Reduced Data Set")
+#Decision Tree on Upsample Reduced DataSet
+train = upSampledTrainRed
+test = testingRed
+rocChartName ="ROC  Decision Tree on Upsampled Reduced Data Set"
+set.seed(715)
+tree_churn = tree(churn~., data = train)
+
+#PRune TREE 
+#prune the tree
+set.seed(725)
+cv.tree.churn = cv.tree(tree_churn, FUN = prune.misclass)
+cv.tree.churn
+minSD = min(cv.tree.churn$dev)
+minSDTreeSize = which(cv.tree.churn$dev == minSD)
+bestTreeSize = min(cv.tree.churn$size[minSDTreeSize])
+
+par(mfrow=c(1,2)) #i want to plot size vs deviance
+plot(cv.tree.churn$size, cv.tree.churn$dev,type="b")
+plot(cv.tree.churn$k, cv.tree.churn$dev,type="b") 
+
+#build best tree based on prunning 
+prune.churn.tree = prune.misclass(tree_churn, best = bestTreeSize)
+par(mfrow=c(1,1))
+plot(prune.churn.tree, type = "uniform")
+text(prune.churn.tree, pretty=0)
+
+#predictions on test data 
+tree.pred = predict(prune.churn.tree, newdata = test)
+tree.pred.class = predict(prune.churn.tree, newdata = test, type = "class")
+tree.pred.train = predict(prune.churn.tree, newdata = train)
+
+
+confMatrix = confusionMatrix(tree.pred.class,test$churn, positive = "yes" )
+confMatrix
+#ROC 
+rocCurveTest = roc(test$churn, 
+               tree.pred[,2],
+               levels = (levels(test$churn)))
+
+#Plot ROC 
+rocPlotTest = plot(rocCurveTest, print.thres = c(.5), type = "S"
+               ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+               ,print.thres.cex = .8
+               ,legacy.axes = TRUE
+               ,main = paste("Test ",   rocChartName)
+               )
+
+rocCurveTrain = roc(train$churn, 
+                    tree.pred.train[,2],
+                    levels = (levels(train$churn)))
+
+#Plot ROC 
+rocPlotTrain = plot(rocCurveTrain, print.thres = c(.5), type = "S"
+                   ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+                   ,print.thres.cex = .8 
+                   ,legacy.axes = TRUE
+                   ,main = paste("Train ",   rocChartName)
+                   )
+
+
+
+YoudenLogTresh = coords(rocCurveTrain,x = "best", best.method = "closest.topleft"); YoudenLogTresh
+
+print("------------------------------------------------------------------------------------------------------")
+
+
+print("Decison Tree Model on Smote Reduced Data Set")
+# #Decision Tree on Smote Reduced DataSet
+train = smoteTrainRed
+test = testingRed
+rocChartName ="ROC  Decision Tree on Smote Reduced Data Set"
+set.seed(715)
+tree_churn = tree(churn~., data = train)
+
+
+#PRune TREE 
+#prune the tree
+set.seed(725)
+cv.tree.churn = cv.tree(tree_churn, FUN = prune.misclass)
+cv.tree.churn
+minSD = min(cv.tree.churn$dev)
+minSDTreeSize = which(cv.tree.churn$dev == minSD)
+bestTreeSize = min(cv.tree.churn$size[minSDTreeSize])
+
+par(mfrow=c(1,2)) #i want to plot size vs deviance
+plot(cv.tree.churn$size, cv.tree.churn$dev,type="b")
+plot(cv.tree.churn$k, cv.tree.churn$dev,type="b")
+
+#build best tree based on prunning 
+prune.churn.tree = prune.misclass(tree_churn, best = bestTreeSize)
+par(mfrow=c(1,1))
+plot(prune.churn.tree, type = "uniform")
+text(prune.churn.tree, pretty=0)
+
+#predictions on test data 
+tree.pred = predict(prune.churn.tree, newdata = test)
+tree.pred.class = predict(prune.churn.tree, newdata = test, type = "class")
+tree.pred.train = predict(prune.churn.tree, newdata = train)
+
+confMatrix = confusionMatrix(tree.pred.class,test$churn, positive = "yes" )
+confMatrix
+#ROC 
+rocCurveTest = roc(test$churn, 
+               tree.pred[,2],
+               levels = (levels(test$churn)))
+
+#Plot ROC 
+rocPlotTest = plot(rocCurveTest, print.thres = c(.5), type = "S"
+               ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+               ,print.thres.cex = .8
+               ,legacy.axes = TRUE
+               ,main = paste("Test ",   rocChartName)
+               )
+
+rocCurveTrain = roc(train$churn, 
+                    tree.pred.train[,2],
+                    levels = (levels(train$churn)))
+
+#Plot ROC 
+rocPlotTrain = plot(rocCurveTrain, print.thres = c(.5), type = "S"
+                   ,print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)"
+                   ,print.thres.cex = .8 
+                   ,legacy.axes = TRUE
+                   ,main = paste("Train ",   rocChartName)
+                   )
+
+
+YoudenLogTresh = coords(rocCurveTrain,x = "best", best.method = "closest.topleft"); YoudenLogTresh
+
+print("-----------------------------------------------------------------------------------------------------")
+
+```
+
+
+
+
+```{r}
+
+#QDA on Full DataSet
+# print("QDA Model on Full Data Set")
+# QDAChurnFull = qdaChurn(trainingFull, testingFull, predictorsFull, rocChartName ="ROC QDA Model on Full Data Set" )
+# QDAChurnFull$YoudensIndex
+# QDAChurnFull$QDAModel
+# QDAChurnFull$confMat
+
+
+#QDA on Reduced DataSet
+print("QDA Model on Reduced Data Set")
+QDAChurnReduced = qdaChurn(trainingRed, testingRed, predictorsRed, rocChartName ="ROC QDA Model on Reduced Data Set" )
+QDAChurnReduced$YoudensIndex
+QDAChurnReduced$QDAModel
+QDAChurnReduced$confMat
+
+#QDA on Upsampling DataSet - Full
+print("QDA Model on Upsampling reduced Data Set")
+QDAChurnUpSampleReduced = qdaChurn(upSampledTrainRed, testingRed, predictorsRed, rocChartName = "ROC QDA Model on Upsampling Reduced Data Set")
+QDAChurnUpSampleReduced$YoudensIndex
+QDAChurnUpSampleReduced$QDAModel
+QDAChurnUpSampleReduced$confMat
+
+#QDA on Smote sample DataSet
+print("QDA Model on Smote sampling Reduced Data Set")
+QDAChurnSmoteSampleReduced = qdaChurn(smoteTrainRed, testingRed, predictorsRed, rocChartName = "ROC QDA Model on Smote Reduced Data Set")
+QDAChurnSmoteSampleReduced$YoudensIndex
+QDAChurnSmoteSampleReduced$QDAModel
+QDAChurnSmoteSampleReduced$confMat
+
+plot(QDAChurnReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test QDA Reduced ROC")
+plot(QDAChurnSmoteSampleReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test QDA Smote Reduced ROC")
+plot(QDAChurnUpSampleReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test QDA UpSample Reduced ROC")
+
+plot(QDAChurnReduced$rocCurveTrain, col = "red", lty = 2, main = "ROC")
+plot(QDAChurnSmoteSampleReduced$rocCurveTrain, col = "green", lty = 3, add = TRUE)
+plot(QDAChurnUpSampleReduced$rocCurveTrain, col = "blue", lty = 5, add = TRUE)
+
+```
+
+#Linear Discriminant Analysis 
+
+Fisrt we will build a out of the box LDA curve
+Then we wil plot the ROC 
+Using Youden's J we will find the best treshold that maximizes Sensitivity 
+
+```{r}
+
+# #LDA on Full DataSet
+# print("LDA Model on Full Data Set")
+# LDAChurnFull = ldaChurn(trainingFull, testingFull, predictorsFull, rocChartName ="ROC LDA Model on Full Data Set")
+# LDAChurnFull$YoudensIndex
+# LDAChurnFull$LDAModel
+# LDAChurnFull$confMat
+
+#LDA on Reduced DataSet
+print("LDA Model on Reduced Data Set")
+LDAChurnReduced = ldaChurn(trainingRed, testingRed, predictorsRed, rocChartName ="ROC LDA Model on Reduced Data Set" )
+LDAChurnReduced$YoudensIndex
+LDAChurnReduced$confMat
+
+#LDA on Upsampling DataSet - Full
+print("LDA Model on Upsampling reduced Data Set")
+LDAChurnUpSampleReduced = ldaChurn(upSampledTrainRed, testingRed, predictorsRed, rocChartName = "ROC LDA Model on Upsampling Reduced Data Set")
+LDAChurnUpSampleReduced$YoudensIndex
+LDAChurnUpSampleReduced$LDAModel
+LDAChurnUpSampleReduced$confMat
+
+#LDA on Smote sample DataSet
+print("LDA Model on Smote sampling Reduced Data Set")
+LDAChurnSmoteSampleReduced = ldaChurn(smoteTrainRed, testingRed, predictorsRed, rocChartName = "ROC LDA Model on Smote Reduced Data Set")
+LDAChurnSmoteSampleReduced$YoudensIndex
+LDAChurnSmoteSampleReduced$LDAModel
+LDAChurnSmoteSampleReduced$confMat
+LDAChurnSmoteSampleReduced$LDAModel$finalModel
+
+        
+plot(LDAChurnReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test LDA Reduced ROC")
+plot(LDAChurnSmoteSampleReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test LDA Smote Reduced ROC")
+plot(LDAChurnUpSampleReduced$rocCurveTest, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test LDA UpSample Reduced ROC")
+
+plot(LDAChurnReduced$rocCurveTrain, col = "red", lty = 2, main = "ROC")
+plot(LDAChurnSmoteSampleReduced$rocCurveTrain, col = "green", lty = 3, add = TRUE)
+plot(LDAChurnUpSampleReduced$rocCurveTrain, col = "blue", lty = 5, add = TRUE)
+
+```
+
+
+#Logistic did not converge on the full dataset as expected, most probably due to the highly correlated variables and the near zero variance 
+
+#Model 1: Logistic with all variables (full dataset)
+#what are the significant predictors 
+
+#Model 2: Logistic with all training on SENSETIVITY metric 
+-- Did not help a lot, provided the same results as the ROC metrics
+
+#Model 3: Logistic with reduced variables (reduced dataset)
+
+```{r}
+#logistic on Full DataSet
+logisticChurnFull = logisticChurn(trainingFull, testingFull, predictorsFull, rocChartName ="ROC Logistic Model on Full Data Set")
+logisticChurnFull$YoudensIndex
+logisticChurnFull$logisticModel
+logisticChurnFull$confMat
+
+#make predictions
+logpredFull = predict(logisticChurnFull$logisticModel, newdata=testingFull, type = "prob")
+
+lab=contrasts(trainingFull$churn)
+tn=rownames(lab)
+logistic_pred_y = rep(tn[1], length(testingFull$churn))
+logistic_pred_y[logpredFull[,"yes"] > logisticChurnFull$YoudensIndex["threshold"]] = tn[2]
+length(logistic_pred_y)
+length(testingFull$churn)
+#confusion matrix
+tt=table(logistic_pred_y, testingFull$churn);tt
+confusionMatrix(data=factor(logistic_pred_y), reference = testingFull$churn, positive = "yes")
+
+ggplot(logpredFull, aes(x=yes)) +
+                        geom_density(alpha=.2, fill="#FF6666")+
+                        labs(x = "Probabilities", title = "Probability distribution of Churn on Full Data set")+
+                        theme_bw()
+
+#logistic on Reduced DataSet
+print("Logistic Model on Reduced Data Set")
+logisticChurnReduced = logisticChurn(trainingRed, testingRed, predictorsRed, rocChartName ="ROC Logistic Model on Reduced Data Set" )
+logisticChurnReduced$YoudensIndex
+logisticChurnReduced$logisticModel
+logisticChurnReduced$confMat
+
+#make predictions
+logpredRed = predict(logisticChurnReduced$logisticModel, newdata=testingRed, type = "prob")
+
+lab=contrasts(trainingRed$churn)
+tn=rownames(lab)
+logistic_pred_y_red = rep(tn[1], length(testingFull$churn))
+logistic_pred_y_red[logpredRed[,"yes"] > logisticChurnReduced$YoudensIndex["threshold"]] = tn[2]
+length(logistic_pred_y_red)
+length(testingRed$churn)
+#confusion matrix
+tt=table(logistic_pred_y_red, testingRed$churn);tt
+confusionMatrix(data=factor(logistic_pred_y_red), reference = testingRed$churn, positive = "yes")
+
+ggplot(logpredRed, aes(x=yes)) +
+                        geom_density(alpha=.2, fill="#FF6666")+
+                        labs(x = "Probabilities", title = "Probability distribution of Churn on Reduced Data set")+
+                        theme_bw()
+
+
+#logistic on Upsampling DataSet - Full
+print("Logistic Model on Upsampling reduced Data Set")
+logisticChurnUpSampleReduced = logisticChurn(upSampledTrainRed, testingRed, predictorsRed, rocChartName = "ROC Logistic Model on Upsampling Reduced Data Set")
+logisticChurnUpSampleReduced$YoudensIndex
+logisticChurnUpSampleReduced$logisticModel
+logisticChurnUpSampleReduced$confMat
+
+#make predictions
+logpredUpSampleRed = predict(logisticChurnUpSampleReduced$logisticModel, newdata=testingRed, type = "prob")
+
+lab=contrasts(upSampledTrainRed$churn)
+tn=rownames(lab)
+logistic_pred_y_up_red = rep(tn[1], length(testingFull$churn))
+logistic_pred_y_up_red[logpredUpSampleRed[,"yes"] > logisticChurnUpSampleReduced$YoudensIndex["threshold"]] = tn[2]
+length(logistic_pred_y_up_red)
+length(testingRed$churn)
+#confusion matrix
+tt=table(logistic_pred_y_up_red, testingRed$churn);tt
+confusionMatrix(data=factor(logistic_pred_y_up_red), reference = testingRed$churn, positive = "yes")
+
+ggplot(logpredUpSampleRed, aes(x=yes)) +
+                        geom_density(alpha=.2, fill="#FF6666")+
+                        labs(x = "Probabilities", title = "Probability distribution of Churn on Up Sample Reduced Data set")+
+                        theme_bw()
+
+#logistic on Smote sample DataSet
+print("Logistic Model on Smote sampling Reduced Data Set")
+logisticChurnSmoteSampleReduced = logisticChurn(smoteTrainRed, testingRed, predictorsRed, rocChartName = "ROC Logistic Model on Smote Reduced Data Set")
+logisticChurnSmoteSampleReduced$YoudensIndex
+logisticChurnSmoteSampleReduced$logisticModel
+logisticChurnSmoteSampleReduced$confMat
+
+#make predictions
+logpredSmoteRed = predict(logisticChurnSmoteSampleReduced$logisticModel, newdata=testingRed, type = "prob")
+
+lab=contrasts(smoteTrainRed$churn)
+tn=rownames(lab)
+logistic_pred_y_smote_red = rep(tn[1], length(testingFull$churn))
+logistic_pred_y_smote_red[logpredSmoteRed[,"yes"] > logisticChurnSmoteSampleReduced$YoudensIndex["threshold"]] = tn[2]
+length(logistic_pred_y_smote_red)
+length(testingRed$churn)
+#confusion matrix
+tt=table(logistic_pred_y_smote_red, testingRed$churn);tt
+confusionMatrix(data=factor(logistic_pred_y_smote_red), reference = testingRed$churn, positive = "yes")
+
+ggplot(logpredSmoteRed, aes(x=yes)) +
+                        geom_density(alpha=.2, fill="#FF6666")+
+                        labs(x = "Probabilities", title = "Probability distribution of Churn on Smote Reduced Data set")+
+                        theme_bw()
+
+plot.roc(logisticChurnReduced$rocCurveTest, col = 'red', legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test Log Reduced ROC")
+plot(logisticChurnFull$rocCurveTest, col="black" ,legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test Log Full ROC", add = TRUE)
+plot(logisticChurnSmoteSampleReduced$rocCurveTest,col="green", legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test Log Smote ROC", add =TRUE)
+plot(logisticChurnUpSampleReduced$rocCurveTest, col="blue", legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75, main = "Test Log UpSample ROC", add =TRUE)
+
+
+plot(logisticChurnReduced$rocCurveTrain, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75)
+plot(logisticChurnFull$rocCurveTrain, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75)
+plot(logisticChurnSmoteSampleReduced$rocCurveTrain, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75)
+plot(logisticChurnUpSampleReduced$rocCurveTrain, legacy.axes = TRUE,print.thres = c(.5,.25,.15), type = "S",print.thres.pattern = "%.3f (Spec = %.2f, Sens = %.2f)",print.thres.cex = .75)
+
+```
+
+
+#Based on Outcomes we will Try on Upsample Full Set for Random Forest
+
+```{r}
+set.seed(1103)
+
+upSampledTrainFull <- upSample(x = trainingFull[,predictorsFull],
+                           y = trainingFull$churn,
+                            yname = "churn")
+
+#RF on Upsample Full DataSet
+print("Random Forest Model on Upsample Full Data Set")
+RFChurnUpSampleFull = randomForestChurn(upSampledTrainFull, testingFull, predictorsFull, rocChartName ="ROC Random Forest Model on UpSample Full Data Set" )
+RFChurnUpSampleFull$YoudensIndex
+RFChurnUpSampleFull$RFModel
+RFChurnUpSampleFull$confMat
+RFChurnUpSampleFull$varImportance
+RFChurnUpSampleFull$varImpPlot
+RFChurnUpSampleFull$RFModel$finalModel
+
+```
+
+
+#CARET ENSEMBLE 
+
+```{r}
+# #CARET ENSEMBLE on Traning Full
+# caretEnsembleFull = caretEnsembleChurn(train = trainingFull, test = testingFull, predictors = predictorsFull, rocChartName = "Caret Ensemble")
+print("The Caret Ensemble Results on Training Reduced Set")
+#CARET ENSEMBLE on Reduced
+caretEnsembleReduced = caretEnsembleChurn(train = trainingRed, test = testingRed, predictors = predictorsRed, rocChartName = "Caret Ensemble")
+caretEnsembleReduced$rfModelConfMatrix
+caretEnsembleReduced$stackConfMatrix
+caretEnsembleReduced$AUCPlot
+caretEnsembleReduced$ModelsPredTest
+caretEnsembleReduced$stackModel
+varImportance = varImp(caretEnsembleReduced$stackModel$ens_model)
+
+stack_test_preds <- data.frame(predict(caretEnsembleReduced$stackModel, testingRed, type = "prob"))
+
+caretEnsemblePredSummary = data.frame(caretEnsembleReduced$ModelsPredTest , stack_test_preds)
+caretEnsemblePredSummary$ensembleResult = caretEnsemblePredSummary$predict.caretEnsembleReduced.stackModel..testingRed..type....prob..
+caretEnsemblePredSummary = caretEnsemblePredSummary[-6]
+head(caretEnsemblePredSummary)
+
+caTools::colAUC(caretEnsembleReduced$ModelsPredTest, testingRed$churn, plot = TRUE)
+
+#CARET ENSEMBLE on UpSample Reduced
+print("The Caret Ensemble Results on Up Sample Reduced Set")
+caretEnsembleUpsampleRed = caretEnsembleChurn(train = upSampledTrainRed, test = testingRed, predictors = predictorsRed, rocChartName = "Caret Ensemble on Up Sample Reduced Set")
+caretEnsembleUpsampleRed$rfModelConfMatrix
+caretEnsembleUpsampleRed$stackConfMatrix
+caretEnsembleUpsampleRed$AUCPlot
+caretEnsembleUpsampleRed$stackModel
+varImportance = varImp(caretEnsembleUpsampleRed$stackModel$ens_model)
+
+stack_test_preds_upsample <- data.frame(predict(caretEnsembleUpsampleRed$stackModel, testingRed, type = "prob"))
+
+caretUpSampleEnsemblePredSummary = data.frame(caretEnsembleUpsampleRed$ModelsPredTest , stack_test_preds_upsample)
+caretUpSampleEnsemblePredSummary$ensembleResult = caretUpSampleEnsemblePredSummary$predict.caretEnsembleUpsampleRed.stackModel..testingRed..type....prob..
+caretUpSampleEnsemblePredSummary = caretUpSampleEnsemblePredSummary[-6]
+head(caretUpSampleEnsemblePredSummary)
+
+caTools::colAUC(caretEnsembleUpsampleRed$ModelsPredTest, testingRed$churn, plot = TRUE)
+
+```
