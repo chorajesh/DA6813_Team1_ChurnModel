@@ -69,7 +69,7 @@ We use [Git Hub](https://github.com/chorajesh/DA6813_Team1_ChurnModel).
 ## Authors
 
 * **Rajesh Chodavarapu** - *Initial work* - [Rajesh Chodavarapu](https://github.com/chorajesh)
-* **Biljana Jovanova** - *Initial work* - [Biljana Jovanova](https://github.com/biljanajov)
+* **Biljana Jovanova** - *Initial work* - [Biljana Jovanova](https://github.com/bibijova)
 
 
 ## License
